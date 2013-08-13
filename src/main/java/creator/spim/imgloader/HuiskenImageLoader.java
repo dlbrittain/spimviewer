@@ -11,10 +11,10 @@ import mpicbg.spim.data.ViewSetup;
 import mpicbg.spim.data.XmlHelpers;
 import net.imglib2.algorithm.stats.Normalize;
 import net.imglib2.img.Img;
-import net.imglib2.img.ImgPlus;
 import net.imglib2.img.display.imagej.ImageJFunctions;
 import net.imglib2.meta.Axes;
 import net.imglib2.meta.AxisType;
+import net.imglib2.meta.ImgPlus;
 import net.imglib2.type.numeric.integer.UnsignedShortType;
 import net.imglib2.type.numeric.real.FloatType;
 
