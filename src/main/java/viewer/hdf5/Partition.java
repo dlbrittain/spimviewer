@@ -4,8 +4,7 @@ import java.io.File;
 
 import mpicbg.spim.data.XmlHelpers;
 
-import org.w3c.dom.Document;
-import org.w3c.dom.Element;
+import org.jdom2.Element;
 
 /**
  * Partition describes one partition file of a dataset that is split across
@@ -76,24 +75,24 @@ public class Partition
 		{
 			throw new RuntimeException( e );
 		}
-		timepointOffset = Integer.parseInt( elem.getElementsByTagName( "timepointOffset" ).item( 0 ).getTextContent() );
-		timepointStart = Integer.parseInt( elem.getElementsByTagName( "timepointStart" ).item( 0 ).getTextContent() );
-		timepointLength = Integer.parseInt( elem.getElementsByTagName( "timepointLength" ).item( 0 ).getTextContent() );
-		setupOffset = Integer.parseInt( elem.getElementsByTagName( "setupOffset" ).item( 0 ).getTextContent() );
-		setupStart = Integer.parseInt( elem.getElementsByTagName( "setupStart" ).item( 0 ).getTextContent() );
-		setupLength = Integer.parseInt( elem.getElementsByTagName( "setupLength" ).item( 0 ).getTextContent() );
+		timepointOffset = Integer.parseInt( elem.getChildText( "timepointOffset" ) );
+		timepointStart = Integer.parseInt( elem.getChildText( "timepointStart" ) );
+		timepointLength = Integer.parseInt( elem.getChildText( "timepointLength" ) );
+		setupOffset = Integer.parseInt( elem.getChildText( "setupOffset" ) );
+		setupStart = Integer.parseInt( elem.getChildText( "setupStart" ) );
+		setupLength = Integer.parseInt( elem.getChildText( "setupLength" ) );
 	}
 
-	public Element toXml( final Document doc, final File basePath )
+	public Element toXml( final File basePath )
 	{
-		final Element elem = doc.createElement( "partition" );
-		elem.appendChild( XmlHelpers.pathElement( doc, "path", new File( path ), basePath ) );
-		elem.appendChild( XmlHelpers.intElement( doc, "timepointOffset", getTimepointOffset() ) );
-		elem.appendChild( XmlHelpers.intElement( doc, "timepointStart", getTimepointStart() ) );
-		elem.appendChild( XmlHelpers.intElement( doc, "timepointLength", getTimepointLength() ) );
-		elem.appendChild( XmlHelpers.intElement( doc, "setupOffset", getSetupOffset() ) );
-		elem.appendChild( XmlHelpers.intElement( doc, "setupStart", getSetupStart() ) );
-		elem.appendChild( XmlHelpers.intElement( doc, "setupLength", getSetupLength() ) );
+		final Element elem = new Element( "partition" );
+		elem.addContent( XmlHelpers.pathElement( "path", new File( path ), basePath ) );
+		elem.addContent( XmlHelpers.intElement( "timepointOffset", getTimepointOffset() ) );
+		elem.addContent( XmlHelpers.intElement( "timepointStart", getTimepointStart() ) );
+		elem.addContent( XmlHelpers.intElement( "timepointLength", getTimepointLength() ) );
+		elem.addContent( XmlHelpers.intElement( "setupOffset", getSetupOffset() ) );
+		elem.addContent( XmlHelpers.intElement( "setupStart", getSetupStart() ) );
+		elem.addContent( XmlHelpers.intElement( "setupLength", getSetupLength() ) );
 		return elem;
 	}
 
@@ -169,5 +168,31 @@ public class Partition
 	public int getSetupLength()
 	{
 		return setupLength;
+	}
+
+	/**
+	 * Does this partition contain the given timepoint and setup?
+	 *
+	 * @param timepoint
+	 *            timepoint index (in the full sequence)
+	 * @param setup
+	 *            setup index (in the full sequence)
+	 * @return
+	 */
+	public boolean contains( final int timepoint, final int setup )
+	{
+		final int t0 = timepointOffset + timepointStart;
+		if ( timepoint < t0 )
+			return false;
+		final int t1 = t0 + timepointLength;
+		if ( timepoint >= t0 )
+			return false;
+		final int s0 = setupOffset + setupStart;
+		if ( setup < s0 )
+			return false;
+		final int s1 = s0 + setupLength;
+		if ( setup >= s0 )
+			return false;
+		return true;
 	}
 }

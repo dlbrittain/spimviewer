@@ -2,17 +2,22 @@ package viewer;
 
 import java.awt.event.ActionEvent;
 import java.awt.event.KeyEvent;
+import java.io.File;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.util.ArrayList;
 
 import javax.swing.AbstractAction;
+import javax.swing.ActionMap;
+import javax.swing.InputMap;
+import javax.swing.JFileChooser;
 import javax.swing.KeyStroke;
-import javax.xml.parsers.ParserConfigurationException;
+import javax.swing.filechooser.FileFilter;
 
 import mpicbg.spim.data.SequenceDescription;
-import net.imglib.display.RealARGBColorConverter;
 import net.imglib2.Interval;
 import net.imglib2.RandomAccessibleInterval;
+import net.imglib2.display.RealARGBColorConverter;
 import net.imglib2.histogram.DiscreteFrequencyDistribution;
 import net.imglib2.histogram.Histogram1d;
 import net.imglib2.histogram.Real1dBinMapper;
@@ -22,13 +27,23 @@ import net.imglib2.type.numeric.integer.UnsignedShortType;
 import net.imglib2.util.LinAlgHelpers;
 import net.imglib2.view.Views;
 
-import org.xml.sax.SAXException;
+import org.jdom2.Document;
+import org.jdom2.Element;
+import org.jdom2.JDOMException;
+import org.jdom2.input.SAXBuilder;
+import org.jdom2.output.Format;
+import org.jdom2.output.XMLOutputter;
 
 import viewer.crop.CropDialog;
+import viewer.gui.brightness.BrightnessDialog;
 import viewer.gui.brightness.ConverterSetup;
 import viewer.gui.brightness.MinMaxGroup;
-import viewer.gui.brightness.NewBrightnessDialog;
+import viewer.gui.brightness.RealARGBColorConverterSetup;
 import viewer.gui.brightness.SetupAssignments;
+import viewer.gui.transformation.ManualTransformation;
+import viewer.gui.transformation.ManualTransformationEditor;
+import viewer.gui.transformation.TransformedSource;
+import viewer.gui.visibility.ActiveSourcesDialog;
 import viewer.render.Source;
 import viewer.render.SourceAndConverter;
 import viewer.render.SourceState;
@@ -39,23 +54,46 @@ public class ViewRegisteredAngles
 {
 	final KeyStroke brightnessKeystroke = KeyStroke.getKeyStroke( KeyEvent.VK_S, 0 );
 
+	final KeyStroke activeSourcesKeystroke = KeyStroke.getKeyStroke( KeyEvent.VK_F6, 0 );
+
 	final KeyStroke helpKeystroke = KeyStroke.getKeyStroke( KeyEvent.VK_F1, 0 );
 
-	final KeyStroke HelpKeystroke2 = KeyStroke.getKeyStroke( KeyEvent.VK_H, 0 );
+	final KeyStroke helpKeystroke2 = KeyStroke.getKeyStroke( KeyEvent.VK_H, 0 );
 
 	final KeyStroke cropKeystroke = KeyStroke.getKeyStroke( KeyEvent.VK_F5, 0 );
+
+	final KeyStroke manualTransformKeystroke = KeyStroke.getKeyStroke( KeyEvent.VK_T, 0 );
+
+	final KeyStroke saveKeystroke = KeyStroke.getKeyStroke( KeyEvent.VK_F11, 0 );
+
+	final KeyStroke loadKeystroke = KeyStroke.getKeyStroke( KeyEvent.VK_F12, 0 );
 
 	final SpimViewer viewer;
 
 	final SetupAssignments setupAssignments;
 
-	final NewBrightnessDialog brightnessDialog;
+	final ManualTransformation manualTransformation;
+
+	final BrightnessDialog brightnessDialog;
 
 	final CropDialog cropDialog;
+
+	final ActiveSourcesDialog activeSourcesDialog;
+
+	final ManualTransformationEditor manualTransformationEditor;
+
+	final JFileChooser fileChooser;
+
+	File proposedSettingsFile;
 
 	public void toggleBrightnessDialog()
 	{
 		brightnessDialog.setVisible( ! brightnessDialog.isVisible() );
+	}
+
+	public void toggleActiveSourcesDialog()
+	{
+		activeSourcesDialog.setVisible( ! activeSourcesDialog.isVisible() );
 	}
 
 	public void showHelp()
@@ -68,7 +106,12 @@ public class ViewRegisteredAngles
 		cropDialog.setVisible( ! cropDialog.isVisible() );
 	}
 
-	private ViewRegisteredAngles( final String xmlFilename ) throws ParserConfigurationException, SAXException, IOException, InstantiationException, IllegalAccessException, ClassNotFoundException
+	public void toggleManualTransformation()
+	{
+		manualTransformationEditor.toggle();
+	}
+
+	private ViewRegisteredAngles( final String xmlFilename ) throws InstantiationException, IllegalAccessException, ClassNotFoundException, JDOMException, IOException
 	{
 		final int width = 800;
 		final int height = 600;
@@ -76,60 +119,58 @@ public class ViewRegisteredAngles
 		final SequenceViewsLoader loader = new SequenceViewsLoader( xmlFilename );
 		final SequenceDescription seq = loader.getSequenceDescription();
 
+		fileChooser = new JFileChooser();
+		fileChooser.setFileFilter( new FileFilter()
+		{
+			@Override
+			public String getDescription()
+			{
+				return "xml files";
+			}
+
+			@Override
+			public boolean accept( final File f )
+			{
+				if ( f.isDirectory() )
+					return true;
+				if ( f.isFile() )
+				{
+			        final String s = f.getName();
+			        final int i = s.lastIndexOf('.');
+			        if (i > 0 &&  i < s.length() - 1) {
+			            final String ext = s.substring(i+1).toLowerCase();
+			            return ext.equals( "xml" );
+			        }
+				}
+				return false;
+			}
+		} );
+
 		final ArrayList< ConverterSetup > converterSetups = new ArrayList< ConverterSetup >();
 		final ArrayList< SourceAndConverter< ? > > sources = new ArrayList< SourceAndConverter< ? > >();
 		for ( int setup = 0; setup < seq.numViewSetups(); ++setup )
 		{
 			final RealARGBColorConverter< UnsignedShortType > converter = new RealARGBColorConverter< UnsignedShortType >( 0, 65535 );
 			converter.setColor( new ARGBType( ARGBType.rgba( 255, 255, 255, 255 ) ) );
-			sources.add( new SourceAndConverter< UnsignedShortType >( new SpimSource( loader, setup, "angle " + seq.setups.get( setup ).getAngle() ), converter ) );
-			final int id = setup;
-			converterSetups.add( new ConverterSetup()
-			{
-				@Override
-				public void setDisplayRange( final int min, final int max )
-				{
-					converter.setMin( min );
-					converter.setMax( max );
-					viewer.requestRepaint();
-				}
-
-				@Override
-				public void setColor( final ARGBType color )
-				{
-					converter.setColor( color );
-					viewer.requestRepaint();
-				}
-
-				@Override
-				public int getSetupId()
-				{
-					return id;
-				}
-
-				@Override
-				public int getDisplayRangeMin()
-				{
-					return ( int ) converter.getMin();
-				}
-
-				@Override
-				public int getDisplayRangeMax()
-				{
-					return ( int ) converter.getMax();
-				}
-
-				@Override
-				public ARGBType getColor()
-				{
-					return converter.getColor();
-				}
-			} );
+			final SpimSource spimSource = new SpimSource( loader, setup, "angle " + seq.setups.get( setup ).getAngle() );
+			// Decorate each source with an extra transformation, that can be edited manually in this viewer.
+			final TransformedSource< UnsignedShortType > transformedSource = new TransformedSource< UnsignedShortType >( spimSource );
+			sources.add( new SourceAndConverter< UnsignedShortType >( transformedSource, converter ) );
+			converterSetups.add( new RealARGBColorConverterSetup< UnsignedShortType >( setup, converter ) );
 		}
 
 		viewer = new SpimViewer( width, height, sources, seq.numTimepoints() );
+		manualTransformation = new ManualTransformation( viewer );
+		manualTransformationEditor = new ManualTransformationEditor( viewer );
 
-		viewer.addKeyAction( brightnessKeystroke, new AbstractAction( "brightness settings" )
+		for ( final ConverterSetup cs : converterSetups )
+			if ( RealARGBColorConverterSetup.class.isInstance( cs ) )
+				( ( RealARGBColorConverterSetup< ? > ) cs ).setViewer( viewer );
+
+		final ActionMap actionMap = new ActionMap();
+		final InputMap inputMap = new InputMap();
+		inputMap.put( brightnessKeystroke, "brightness settings" );
+		actionMap.put( "brightness settings", new AbstractAction( "brightness settings" )
 		{
 			@Override
 			public void actionPerformed( final ActionEvent arg0 )
@@ -140,7 +181,21 @@ public class ViewRegisteredAngles
 			private static final long serialVersionUID = 1L;
 		} );
 
-		final AbstractAction helpAction = new AbstractAction( "help" )
+		inputMap.put( activeSourcesKeystroke, "visibility and grouping" );
+		actionMap.put( "visibility and grouping", new AbstractAction( "visibility and grouping" )
+		{
+			@Override
+			public void actionPerformed( final ActionEvent arg0 )
+			{
+				toggleActiveSourcesDialog();
+			}
+
+			private static final long serialVersionUID = 1L;
+		} );
+
+		inputMap.put( helpKeystroke,  "help" );
+		inputMap.put( helpKeystroke2,  "help" );
+		actionMap.put(  "help", new AbstractAction( "help" )
 		{
 			@Override
 			public void actionPerformed( final ActionEvent arg0 )
@@ -149,11 +204,10 @@ public class ViewRegisteredAngles
 			}
 
 			private static final long serialVersionUID = 1L;
-		};
-		viewer.addKeyAction( helpKeystroke, helpAction );
-		viewer.addKeyAction( HelpKeystroke2, helpAction );
+		} );
 
-		viewer.addKeyAction( cropKeystroke, new AbstractAction( "crop" )
+		inputMap.put( cropKeystroke, "crop" );
+		actionMap.put( "crop", new AbstractAction( "crop" )
 		{
 			@Override
 			public void actionPerformed( final ActionEvent arg0 )
@@ -171,20 +225,101 @@ public class ViewRegisteredAngles
 			private static final long serialVersionUID = 1L;
 		} );
 
+		inputMap.put(  manualTransformKeystroke, "toggle manual transformation" );
+		actionMap.put( "toggle manual transformation", new AbstractAction( "toggle manual transformation" )
+		{
+			@Override
+			public void actionPerformed( final ActionEvent e )
+			{
+				toggleManualTransformation();
+			}
+
+			private static final long serialVersionUID = 1L;
+		} );
+
+		inputMap.put( saveKeystroke, "save settings" );
+		actionMap.put( "save settings", new AbstractAction( "save settings" )
+		{
+			@Override
+			public void actionPerformed( final ActionEvent arg0 )
+			{
+				try
+				{
+					saveSettings();
+				}
+				catch ( final Exception e )
+				{
+					e.printStackTrace();
+				}
+			}
+
+			private static final long serialVersionUID = 1L;
+		} );
+
+		inputMap.put( loadKeystroke, "load settings" );
+		actionMap.put( "load settings", new AbstractAction( "load settings" )
+		{
+			@Override
+			public void actionPerformed( final ActionEvent arg0 )
+			{
+				try
+				{
+					loadSettings();
+				}
+				catch ( final Exception e )
+				{
+					e.printStackTrace();
+				}
+			}
+
+			private static final long serialVersionUID = 1L;
+		} );
+
+		viewer.getKeybindings().addActionMap( "dialogs", actionMap );
+		viewer.getKeybindings().addInputMap( "dialogs", inputMap );
+
 		setupAssignments = new SetupAssignments( converterSetups, 0, 65535 );
 		final MinMaxGroup group = setupAssignments.getMinMaxGroups().get( 0 );
 		for ( final ConverterSetup setup : setupAssignments.getConverterSetups() )
 			setupAssignments.moveSetupToGroup( setup, group );
-		brightnessDialog = new NewBrightnessDialog( viewer.frame, setupAssignments );
-		viewer.installKeyActions( brightnessDialog );
+		brightnessDialog = new BrightnessDialog( viewer.frame, setupAssignments );
+//		viewer.installKeyActions( brightnessDialog );
 
 		cropDialog = new CropDialog( viewer.frame, viewer, seq );
-		viewer.installKeyActions( cropDialog );
+//		viewer.installKeyActions( cropDialog );
 
+		activeSourcesDialog = new ActiveSourcesDialog( viewer.frame, viewer.visibilityAndGrouping );
+//		viewer.installKeyActions( activeSourcesDialog );
 
 		initTransform( width, height );
-		initBrightness( 0.001, 0.999 );
 
+		if( ! tryLoadSettings( xmlFilename ) )
+			initBrightness( 0.001, 0.999 );
+
+		// check for settings file
+	}
+
+	boolean tryLoadSettings( final String xmlFilename )
+	{
+		proposedSettingsFile = null;
+		if ( xmlFilename.endsWith( ".xml" ) )
+		{
+			final String settings = xmlFilename.substring( 0, xmlFilename.length() - ".xml".length() ) + ".settings" + ".xml";
+			proposedSettingsFile = new File( settings );
+			if ( proposedSettingsFile.isFile() )
+			{
+				try
+				{
+					loadSettings( settings );
+					return true;
+				}
+				catch ( final Exception e )
+				{
+					e.printStackTrace();
+				}
+			}
+		}
+		return false;
 	}
 
 	void initTransform( final int viewerWidth, final int viewerHeight )
@@ -277,18 +412,78 @@ public class ViewRegisteredAngles
 		minmax.getMaxBoundedValue().setCurrentValue( max );
 	}
 
-	public static void view( final String filename ) throws InstantiationException, IllegalAccessException, ClassNotFoundException, ParserConfigurationException, SAXException, IOException
+	void saveSettings()
+	{
+		fileChooser.setSelectedFile( proposedSettingsFile );
+		final int returnVal = fileChooser.showSaveDialog( null );
+		if ( returnVal == JFileChooser.APPROVE_OPTION )
+		{
+			proposedSettingsFile = fileChooser.getSelectedFile();
+			try
+			{
+				saveSettings( proposedSettingsFile.getCanonicalPath() );
+			}
+			catch ( final IOException e )
+			{
+				e.printStackTrace();
+			}
+		}
+	}
+
+	void saveSettings( final String xmlFilename ) throws IOException
+	{
+		final Element root = new Element( "Settings" );
+		root.addContent( viewer.stateToXml() );
+		root.addContent( setupAssignments.toXml() );
+		root.addContent( manualTransformation.toXml() );
+		final Document doc = new Document( root );
+		final XMLOutputter xout = new XMLOutputter( Format.getPrettyFormat() );
+		xout.output( doc, new FileWriter( xmlFilename ) );
+	}
+
+	void loadSettings()
+	{
+		fileChooser.setSelectedFile( proposedSettingsFile );
+		final int returnVal = fileChooser.showOpenDialog( null );
+		if ( returnVal == JFileChooser.APPROVE_OPTION )
+		{
+			proposedSettingsFile = fileChooser.getSelectedFile();
+			try
+			{
+				loadSettings( proposedSettingsFile.getCanonicalPath() );
+			}
+			catch ( final Exception e )
+			{
+				e.printStackTrace();
+			}
+		}
+	}
+
+	void loadSettings( final String xmlFilename ) throws IOException, JDOMException
+	{
+		final SAXBuilder sax = new SAXBuilder();
+		final Document doc = sax.build( xmlFilename );
+		final Element root = doc.getRootElement();
+		viewer.stateFromXml( root );
+		setupAssignments.restoreFromXml( root );
+		manualTransformation.restoreFromXml( root );
+		activeSourcesDialog.update();
+		viewer.requestRepaint();
+	}
+
+	public static void view( final String filename ) throws InstantiationException, IllegalAccessException, ClassNotFoundException, JDOMException, IOException
 	{
 		new ViewRegisteredAngles( filename );
 	}
 
 	public static void main( final String[] args )
 	{
-//		final String fn = "/Users/tobias/workspace/data/fast fly/111010_weber/combined.xml";
+		final String fn = "/Users/pietzsch/workspace/data/fast fly/111010_weber/combined.xml";
+//		final String fn = "/Users/pietzsch/workspace/data/mette/mette.xml";
 //		final String fn = "/Users/tobias/Desktop/openspim.xml";
 //		final String fn = "/Users/pietzsch/Desktop/data/fibsem.xml";
 //		final String fn = "/Users/pietzsch/Desktop/url-valia.xml";
-		final String fn = "/Users/pietzsch/Desktop/Valia/valia.xml";
+//		final String fn = "/Users/pietzsch/Desktop/Valia/valia.xml";
 		try
 		{
 			new ViewRegisteredAngles( fn );

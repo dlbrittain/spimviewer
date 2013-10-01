@@ -14,17 +14,10 @@ import java.awt.TextField;
 import java.awt.event.TextEvent;
 import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileNotFoundException;
 import java.io.FilenameFilter;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
-
-import javax.xml.parsers.DocumentBuilder;
-import javax.xml.parsers.DocumentBuilderFactory;
-import javax.xml.parsers.ParserConfigurationException;
-import javax.xml.transform.TransformerException;
-import javax.xml.transform.TransformerFactoryConfigurationError;
 
 import mpicbg.spim.data.SequenceDescription;
 import mpicbg.spim.data.ViewRegistrations;
@@ -37,9 +30,10 @@ import net.imglib2.Pair;
 import net.imglib2.realtransform.AffineTransform3D;
 import net.imglib2.util.ValuePair;
 
-import org.w3c.dom.Document;
-import org.w3c.dom.Element;
-import org.xml.sax.SAXException;
+import org.jdom2.Document;
+import org.jdom2.Element;
+import org.jdom2.JDOMException;
+import org.jdom2.input.SAXBuilder;
 
 import spimopener.SPIMExperiment;
 import viewer.hdf5.Hdf5ImageLoader;
@@ -60,7 +54,7 @@ public class ExportSpimFusionPlugIn implements PlugIn
 	@Override
 	public void run( final String arg0 )
 	{
-		final Parameters params = getParameters( false );
+		final Parameters params = getParameters();
 
 		// cancelled
 		if ( params == null )
@@ -82,22 +76,21 @@ public class ExportSpimFusionPlugIn implements PlugIn
 		}
 	}
 
-	public static void appendToExistingFile( final Parameters params ) throws TransformerFactoryConfigurationError, TransformerException, ParserConfigurationException, IOException, SAXException, InstantiationException, IllegalAccessException, ClassNotFoundException
+	public static void appendToExistingFile( final Parameters params ) throws JDOMException, IOException, InstantiationException, IllegalAccessException, ClassNotFoundException
 	{
 		final ProgressListenerIJ progress = new PluginHelper.ProgressListenerIJ( 0, 0.95 );
 
 		final SpimRegistrationSequence spimseq = new SpimRegistrationSequence( params.conf );
 		final List< AffineTransform3D > fusionTransforms = spimseq.getFusionTransforms( params.cropOffsetX, params.cropOffsetY, params.cropOffsetZ, params.scale );
-		final FusionResult fusionResult = new FusionResult( spimseq, params.fusionDirectory, params.filenamePattern, params.numSlices, params.sliceValueMin, params.sliceValueMax, fusionTransforms );
+		final FusionResult fusionResult = FusionResult.create( spimseq, params.fusionDirectory, params.filenamePattern, params.numSlices, params.sliceValueMin, params.sliceValueMax, fusionTransforms );
 
 		// aggregate the ViewSetups
 		final SetupAggregator aggregator = new SetupAggregator();
 
 		// first add the setups from the existing dataset
-		final DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
-		final DocumentBuilder db = dbf.newDocumentBuilder();
-		final Document dom = db.parse( params.seqFile );
-		final Element root = dom.getDocumentElement();
+		final SAXBuilder sax = new SAXBuilder();
+		final Document doc = sax.build( params.seqFile );
+		final Element root = doc.getRootElement();
 
 		final File existingDatasetXmlFile = params.seqFile;
 		final File baseDirectory = existingDatasetXmlFile.getParentFile();
@@ -153,20 +146,21 @@ public class ExportSpimFusionPlugIn implements PlugIn
 		WriteSequenceToXml.writeSequenceToXml( sequenceDescription, aggregateRegs, params.seqFile.getAbsolutePath() );
 	}
 
-	public static void saveAsNewFile( final Parameters params ) throws FileNotFoundException, TransformerFactoryConfigurationError, TransformerException, ParserConfigurationException
+	public static void saveAsNewFile( final Parameters params ) throws IOException
 	{
 		final SpimRegistrationSequence spimseq = new SpimRegistrationSequence( params.conf );
 		final List< AffineTransform3D > fusionTransforms = spimseq.getFusionTransforms( params.cropOffsetX, params.cropOffsetY, params.cropOffsetZ, params.scale );
-		final FusionResult fusionResult = new FusionResult( spimseq, params.fusionDirectory, params.filenamePattern, params.numSlices, params.sliceValueMin, params.sliceValueMax, fusionTransforms );
+		final FusionResult fusionResult = FusionResult.create( spimseq, params.fusionDirectory, params.filenamePattern, params.numSlices, params.sliceValueMin, params.sliceValueMax, fusionTransforms );
 
 		// aggregate the ViewSetups
 		final SetupAggregator aggregator = new SetupAggregator();
 
-		// now add a new setup from the fusion result
-		final SequenceDescription fusionSeq = fusionResult.getSequenceDescription();
-		final ViewRegistrations fusionReg = fusionResult.getViewRegistrations();
-		final ViewSetup fusionSetup = fusionSeq.setups.get( 0 );
-		aggregator.add( fusionSetup, fusionSeq, fusionReg, params.resolutions, params.subdivisions );
+		// add the setups from the fusion result
+//		final SequenceDescription fusionSeq = fusionResult.getSequenceDescription();
+//		final ViewRegistrations fusionReg = fusionResult.getViewRegistrations();
+//		final ViewSetup fusionSetup = fusionSeq.setups.get( 0 );
+//		aggregator.add( fusionSetup, fusionSeq, fusionReg, params.resolutions, params.subdivisions );
+		aggregator.addSetups( fusionResult, params.resolutions, params.subdivisions );
 
 		final File baseDirectory = params.seqFile.getParentFile();
 		final SequenceDescription aggregateSeq = aggregator.createSequenceDescription( baseDirectory );
@@ -227,8 +221,17 @@ public class ExportSpimFusionPlugIn implements PlugIn
 		}
 	}
 
-	protected Parameters getParameters( final boolean multichannel )
+	protected Parameters getParameters()
 	{
+		final GenericDialog gd0 = new GenericDialogPlus( "SpimViewer Import" );
+		gd0.addChoice( "Select_channel type", ExportSpimSequencePlugIn.fusionType, ExportSpimSequencePlugIn.fusionType[ Multi_View_Fusion.defaultFusionType ] );
+		gd0.showDialog();
+		if ( gd0.wasCanceled() )
+			return null;
+		final int channelChoice = gd0.getNextChoiceIndex();
+		Multi_View_Fusion.defaultFusionType = channelChoice;
+		final boolean multichannel = channelChoice == 1;
+
 		final GenericDialogPlus gd = new GenericDialogPlus( "SpimViewer Import" );
 
 		gd.addDirectoryOrFileField( "SPIM_data_directory", Bead_Registration.spimDataDirectory );
@@ -405,6 +408,8 @@ public class ExportSpimFusionPlugIn implements PlugIn
 		{
 			conf.inputdirectory = Bead_Registration.spimDataDirectory;
 		}
+
+		conf.fuseOnly = true; // this is to avoid an exception in the multi-channel case
 
 		// get filenames and so on...
 		if ( ! ExportSpimSequencePlugIn.init( conf ) )
@@ -702,7 +707,9 @@ public class ExportSpimFusionPlugIn implements PlugIn
 				if ( name.substring( tStart, tStart + 1 ).equals("l") )
 					tStart++;
 				final int tEnd = name.indexOf( "_", tStart );
-				final String pattern = name.substring( 0, tStart ) + "%1$d" + name.substring( tEnd, name.length() - 4 - digits ) + "%2$0" + digits + "d.tif";
+				final int cStart = name.indexOf( "_ch", tEnd ) + 3;
+				final int cEnd = name.indexOf( "_", cStart );
+				final String pattern = name.substring( 0, tStart ) + "%1$d" + name.substring( tEnd, cStart ) + "%2$d" + name.substring( cEnd, name.length() - 4 - digits ) + "%3$0" + digits + "d.tif";
 				IOFunctions.println( "detected pattern = " + pattern );
 
 				final String prefix = name.substring( 0, name.length() - 4 - digits );

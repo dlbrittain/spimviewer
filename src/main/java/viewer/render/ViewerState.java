@@ -1,17 +1,31 @@
 package viewer.render;
 
+import static viewer.render.DisplayMode.FUSED;
+import static viewer.render.DisplayMode.SINGLE;
 import static viewer.render.Interpolation.NEARESTNEIGHBOR;
 
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.TreeSet;
 
 import net.imglib2.realtransform.AffineTransform3D;
 
 public class ViewerState
 {
 	final protected ArrayList< SourceState< ? > > sources;
+
+	/**
+	 * read-only view of {@link #sources}.
+	 */
+	final private List< SourceState< ? > > unmodifiableSources;
+
+	final protected ArrayList< SourceGroup > groups;
+
+	/**
+	 * read-only view of {@link #groups}.
+	 */
+	final private List< SourceGroup > unmodifiableGroups;
 
 	/**
 	 * number of available timepoints.
@@ -34,13 +48,23 @@ public class ViewerState
 	 * mode, only the current source (SPIM angle). Otherwise, in <em>fused</em>
 	 * mode, all active sources are blended.
 	 */
-	protected boolean singleSourceMode;
+//	protected boolean singleSourceMode;
+	/**
+	 * TODO
+	 */
+	protected DisplayMode displayMode;
 
 	/**
 	 * The index of the current source.
 	 * (In single-source mode only the current source is shown.)
 	 */
 	protected int currentSource;
+
+	/**
+	 * The index of the current group.
+	 * (In single-group mode only the sources in the current group are shown.)
+	 */
+	protected int currentGroup;
 
 	/**
 	 * which timepoint is currently shown.
@@ -54,17 +78,21 @@ public class ViewerState
 	 * @param numTimePoints
 	 *            number of available timepoints.
 	 */
-	public ViewerState( final Collection< SourceAndConverter< ? > > sources, final int numTimePoints )
+	public ViewerState( final List< SourceAndConverter< ? > > sources, final List< SourceGroup > sourceGroups, final int numTimePoints )
 	{
 		this.sources = new ArrayList< SourceState< ? > >( sources.size() );
 		for ( final SourceAndConverter< ? > source : sources )
 			this.sources.add( SourceState.create( source ) );
+		unmodifiableSources = Collections.unmodifiableList( this.sources );
+		this.groups = new ArrayList< SourceGroup >( sourceGroups );
+		unmodifiableGroups = Collections.unmodifiableList( this.groups );
 		this.numTimePoints = numTimePoints;
 
 		viewerTransform = new AffineTransform3D();
 		interpolation = NEARESTNEIGHBOR;
-		singleSourceMode = true;
+		displayMode = SINGLE;
 		currentSource = 0;
+		currentGroup = 0;
 		currentTimepoint = 0;
 	}
 
@@ -77,11 +105,17 @@ public class ViewerState
 		sources = new ArrayList< SourceState< ? > >( s.sources.size() );
 		for ( final SourceState< ? > source : s.sources )
 			this.sources.add( source.copy() );
+		unmodifiableSources = Collections.unmodifiableList( sources );
+		groups = new ArrayList< SourceGroup >( s.groups.size() );
+		for ( final SourceGroup group : s.groups )
+			this.groups.add( group.copy() );
+		unmodifiableGroups = Collections.unmodifiableList( groups );
 		numTimePoints = s.numTimePoints;
 		viewerTransform = s.viewerTransform.copy();
 		interpolation = s.interpolation;
-		singleSourceMode = s.singleSourceMode;
+		displayMode = s.displayMode;
 		currentSource = s.currentSource;
+		currentGroup = s.currentGroup;
 		currentTimepoint = s.currentTimepoint;
 	}
 
@@ -117,6 +151,14 @@ public class ViewerState
 	}
 
 	/**
+	 * Get the index of the current source.
+	 */
+	public synchronized int getCurrentSource()
+	{
+		return currentSource;
+	}
+
+	/**
 	 * Make the source with the given index current.
 	 */
 	public synchronized void setCurrentSource( final int index )
@@ -132,9 +174,22 @@ public class ViewerState
 	/**
 	 * Get the index of the current source.
 	 */
-	public synchronized int getCurrentSource()
+	public synchronized int getCurrentGroup()
 	{
-		return currentSource;
+		return currentGroup;
+	}
+
+	/**
+	 * Make the source with the given index current.
+	 */
+	public synchronized void setCurrentGroup( final int index )
+	{
+		if ( index >= 0 && index < groups.size() )
+		{
+			groups.get( currentGroup ).setCurrent( false );
+			currentGroup = index;
+			groups.get( currentGroup ).setCurrent( true );
+		}
 	}
 
 	/**
@@ -157,6 +212,7 @@ public class ViewerState
 		interpolation = method;
 	}
 
+	// TODO: replace by getDisplayMode()
 	/**
 	 * Is the display mode <em>single-source</em>? In <em>single-source</em>
 	 * mode, only the current source (SPIM angle). Otherwise, in <em>fused</em>
@@ -166,9 +222,10 @@ public class ViewerState
 	 */
 	public synchronized boolean isSingleSourceMode()
 	{
-		return singleSourceMode;
+		return displayMode == SINGLE;
 	}
 
+	// TODO: replace by setDisplayMode();
 	/**
 	 * Set the display mode to <em>single-source</em> (true) or <em>fused</em>
 	 * (false). In <em>single-source</em> mode, only the current source (SPIM
@@ -180,7 +237,24 @@ public class ViewerState
 	 */
 	public synchronized void setSingleSourceMode( final boolean singleSourceMode )
 	{
-		this.singleSourceMode = singleSourceMode;
+		if ( singleSourceMode )
+			setDisplayMode( SINGLE );
+		else
+			setDisplayMode( FUSED );
+	}
+
+	/**
+	 * TODO
+	 * @param mode
+	 */
+	public synchronized void setDisplayMode( final DisplayMode mode )
+	{
+		displayMode = mode;
+	}
+
+	public synchronized DisplayMode getDisplayMode()
+	{
+		return displayMode;
 	}
 
 	/**
@@ -209,9 +283,9 @@ public class ViewerState
 	 *
 	 * @return list of all sources.
 	 */
-	public synchronized List< SourceState< ? > > getSources()
+	public List< SourceState< ? > > getSources()
 	{
-		return Collections.unmodifiableList( sources );
+		return unmodifiableSources;
 	}
 
 	/**
@@ -225,17 +299,47 @@ public class ViewerState
 	}
 
 	/**
-	 * Returns a list of all currently visible sources.
+	 * Returns a list of all source groups.
 	 *
-	 * @return list of all currently visible sources.
+	 * @return list of all source groups.
 	 */
-	protected synchronized ArrayList< SourceState< ? > > getVisibleSources()
+	public List< SourceGroup > getSourceGroups()
 	{
-		final ArrayList< SourceState< ? > > visibleSources = new ArrayList< SourceState< ? > >();
-		for ( final SourceState< ? > source : sources )
-			if ( source.isVisible( singleSourceMode ) )
-				visibleSources.add( source );
-		return visibleSources;
+		return unmodifiableGroups;
+	}
+
+	/**
+	 * Returns the number of source groups.
+	 *
+	 * @return number of source groups.
+	 */
+	public int numSourceGroups()
+	{
+		return groups.size();
+	}
+
+	public synchronized boolean isSourceVisible( final int index )
+	{
+		switch ( displayMode )
+		{
+		case SINGLE:
+			return ( index == currentSource ) && isPresent( index );
+		case GROUP:
+			return groups.get( currentGroup ).getSourceIds().contains( index ) && isPresent( index );
+		case FUSED:
+			return sources.get( index ).isActive() && isPresent( index );
+		case FUSEDGROUP:
+		default:
+			for ( final SourceGroup group : groups )
+				if ( group.isActive() && group.getSourceIds().contains( index ) && isPresent( index ) )
+					return true;
+			return false;
+		}
+	}
+
+	private boolean isPresent( final int sourceId )
+	{
+		return sources.get( sourceId ).getSpimSource().isPresent( currentTimepoint );
 	}
 
 	/**
@@ -243,13 +347,36 @@ public class ViewerState
 	 *
 	 * @return indices of all currently visible sources.
 	 */
-	public synchronized ArrayList< Integer > getVisibleSourceIndices()
+	public synchronized List< Integer > getVisibleSourceIndices()
 	{
-		final ArrayList< Integer > visibleSources = new ArrayList< Integer >();
-		for ( int i = 0; i < sources.size(); ++i )
-			if ( sources.get( i ).isVisible( singleSourceMode ) )
-				visibleSources.add( i );
-		return visibleSources;
+		final ArrayList< Integer > visible = new ArrayList< Integer >();
+		switch ( displayMode )
+		{
+		case SINGLE:
+			if ( isPresent( currentSource ) )
+				visible.add( currentSource );
+			break;
+		case GROUP:
+			for ( final int sourceId : groups.get( currentGroup ).getSourceIds() )
+				if ( isPresent( sourceId ) )
+					visible.add( sourceId );
+			break;
+		case FUSED:
+			for ( int i = 0; i < sources.size(); ++i )
+				if ( sources.get( i ).isActive() && isPresent( i ) )
+					visible.add( i );
+			break;
+		case FUSEDGROUP:
+			final TreeSet< Integer > gactive = new TreeSet< Integer >();
+			for ( final SourceGroup group : groups )
+				if ( group.isActive() )
+					gactive.addAll( group.getSourceIds() );
+			for ( final int sourceId : new ArrayList< Integer >( gactive ) )
+				if ( isPresent( sourceId ) )
+					visible.add( sourceId );
+			break;
+		}
+		return visible;
 	}
 
 	/*
@@ -272,17 +399,28 @@ public class ViewerState
 
 		final SourceState< ? > source = sources.get( sourceIndex );
 		int targetLevel = source.getSpimSource().getNumMipmapLevels() - 1;
-		if ( source.isVisible( singleSourceMode ) )
+		if ( isSourceVisible( sourceIndex ) )
 		{
 			for ( int level = targetLevel - 1; level >= 0; level-- )
 			{
-//				System.out.println( "source.getVoxelScreenSize( level = " + level + " ) = " + source.getVoxelScreenSize( screenTransform, currentTimepoint, level ) );
 				if ( source.getVoxelScreenSize( screenTransform, currentTimepoint, level ) >= 0.99 /*1.0*/ )
 					targetLevel = level;
 				else
 					break;
 			}
+			if ( targetLevel > 0 )
+			{
+				final double size1 = source.getVoxelScreenSize( screenTransform, currentTimepoint, targetLevel );
+				final double size0 = source.getVoxelScreenSize( screenTransform, currentTimepoint, targetLevel - 1 );
+				if ( Math.abs( size1 - 1.0 ) / 2 > Math.abs( size0 - 1.0 ) )
+					targetLevel--;
+			}
 		}
 		return targetLevel;
+	}
+
+	public int getNumTimePoints()
+	{
+		return numTimePoints;
 	}
 }

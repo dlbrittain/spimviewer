@@ -10,7 +10,7 @@ import net.imglib2.util.LinAlgHelpers;
 public class SourceState< T extends NumericType< T > > extends SourceAndConverter< T >
 {
 	/**
-	 * Whether the source is active (visible in fused mode).
+	 * Whether the source is active (visible in  {@link DisplayMode#FUSED} mode).
 	 */
 	protected boolean isActive;
 
@@ -76,21 +76,6 @@ public class SourceState< T extends NumericType< T > > extends SourceAndConverte
 	public void setCurrent( final boolean isCurrent )
 	{
 		this.isCurrent = isCurrent;
-	}
-
-	/**
-	 * Is the source visible? The source is visible if it is active in
-	 * <em>fused-mode</em> or it is current in <em>single-source</em> mode.
-	 *
-	 * @param singleSourceMode
-	 *            Is the display mode <em>single-source</em> (true) or
-	 *            <em>fused</em> (false).
-	 *
-	 * @return true, if the source is visible.
-	 */
-	public boolean isVisible( final boolean singleSourceMode )
-	{
-		return singleSourceMode ? isCurrent() : isActive();
 	}
 
 	/**

@@ -1,50 +1,58 @@
 package viewer;
 
+import static viewer.VisibilityAndGrouping.Event.CURRENT_SOURCE_CHANGED;
+import static viewer.VisibilityAndGrouping.Event.DISPLAY_MODE_CHANGED;
+import static viewer.VisibilityAndGrouping.Event.GROUP_ACTIVITY_CHANGED;
+import static viewer.VisibilityAndGrouping.Event.GROUP_NAME_CHANGED;
+import static viewer.VisibilityAndGrouping.Event.SOURCE_ACTVITY_CHANGED;
+import static viewer.VisibilityAndGrouping.Event.VISIBILITY_CHANGED;
+
 import java.awt.BorderLayout;
 import java.awt.Container;
 import java.awt.Font;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.GraphicsConfiguration;
-import java.awt.event.ActionEvent;
-import java.awt.event.KeyEvent;
 import java.awt.event.KeyListener;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseMotionListener;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.util.ArrayList;
-import java.util.Collection;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
-import javax.swing.AbstractAction;
-import javax.swing.Action;
-import javax.swing.ActionMap;
-import javax.swing.InputMap;
 import javax.swing.JComponent;
 import javax.swing.JFrame;
-import javax.swing.JRootPane;
 import javax.swing.JSlider;
-import javax.swing.KeyStroke;
-import javax.swing.RootPaneContainer;
+import javax.swing.SwingUtilities;
 import javax.swing.event.ChangeEvent;
 import javax.swing.event.ChangeListener;
 
-import net.imglib.ui.OverlayRenderer;
-import net.imglib.ui.PainterThread;
-import net.imglib.ui.component.InteractiveDisplay3DCanvas;
-import net.imglib2.Pair;
 import net.imglib2.Positionable;
 import net.imglib2.RealPoint;
 import net.imglib2.RealPositionable;
 import net.imglib2.realtransform.AffineTransform3D;
+import net.imglib2.ui.InteractiveDisplayCanvasComponent;
+import net.imglib2.ui.OverlayRenderer;
+import net.imglib2.ui.PainterThread;
+import net.imglib2.ui.TransformEventHandler;
 import net.imglib2.ui.TransformEventHandler3D;
-import net.imglib2.ui.TransformListener3D;
+import net.imglib2.ui.TransformListener;
+import net.imglib2.ui.overlay.BufferedImageOverlayRenderer;
+import net.imglib2.ui.util.GuiUtil;
 import net.imglib2.util.LinAlgHelpers;
-import net.imglib2.util.ValuePair;
+
+import org.jdom2.Element;
+
 import viewer.TextOverlayAnimator.TextPosition;
+import viewer.gui.InputActionBindings;
+import viewer.gui.XmlIoViewerState;
+import viewer.render.DisplayMode;
 import viewer.render.Interpolation;
 import viewer.render.MultiResolutionRenderer;
 import viewer.render.SourceAndConverter;
+import viewer.render.SourceGroup;
 import viewer.render.SourceState;
 import viewer.render.ViewerState;
 import viewer.render.overlay.MultiBoxOverlayRenderer;
@@ -52,7 +60,7 @@ import viewer.render.overlay.SourceInfoOverlayRenderer;
 import viewer.util.AbstractTransformAnimator;
 import viewer.util.Affine3DHelpers;
 
-public class SpimViewer implements OverlayRenderer, TransformListener3D, PainterThread.Paintable
+public class SpimViewer implements OverlayRenderer, TransformListener< AffineTransform3D >, PainterThread.Paintable, VisibilityAndGrouping.UpdateListener
 {
 	protected ViewerState state;
 
@@ -68,9 +76,10 @@ public class SpimViewer implements OverlayRenderer, TransformListener3D, Painter
 	final protected AffineTransform3D viewerTransform;
 
 	/**
-	 * Canvas used for displaying the rendered {@link #screenImages screen image}.
+	 * Canvas used for displaying the rendered {@link #screenImages screen
+	 * image}.
 	 */
-	final protected InteractiveDisplay3DCanvas display;
+	final protected InteractiveDisplayCanvasComponent< AffineTransform3D > display;
 
 	/**
 	 * Thread that triggers repainting of the display.
@@ -83,10 +92,22 @@ public class SpimViewer implements OverlayRenderer, TransformListener3D, Painter
 
 	final protected MouseCoordinateListener mouseCoordinates;
 
-	final protected ArrayList< Pair< KeyStroke, Action > > keysActions;
+	private final InputActionBindings keybindings;
+
+	final protected VisibilityAndGrouping visibilityAndGrouping;
+
+	/**
+	 * These listeners will be notified about changes to the
+	 * {@link #viewerTransform}. This is done <em>before</em> calling
+	 * {@link #requestRepaint()} so listeners have the chance to interfere.
+	 */
+	protected final CopyOnWriteArrayList< TransformListener< AffineTransform3D > > transformListeners;
 
 	protected AbstractTransformAnimator currentAnimator = null;
 
+	protected TextOverlayAnimator animatedOverlay;
+
+	protected final MessageOverlayAnimator msgOverlay;
 
 	/**
 	 *
@@ -101,17 +122,35 @@ public class SpimViewer implements OverlayRenderer, TransformListener3D, Painter
 	 * @param numMipmapLevels
 	 *            number of available mipmap levels.
 	 */
-	public SpimViewer( final int width, final int height, final Collection< SourceAndConverter< ? > > sources, final int numTimePoints)
+	public SpimViewer( final int width, final int height, final List< SourceAndConverter< ? > > sources, final int numTimePoints )
 	{
-		state = new ViewerState( sources, numTimePoints );
-		if ( ! sources.isEmpty() )
+		final int numGroups = 10;
+		final ArrayList< SourceGroup > groups = new ArrayList< SourceGroup >( numGroups );
+		for ( int i = 0; i < numGroups; ++i )
+		{
+			final SourceGroup g = new SourceGroup( "group " + Integer.toString( i + 1 ) );
+			if ( i < sources.size() )
+			{
+				g.addSource( i );
+			}
+			groups.add( g );
+		}
+
+		state = new ViewerState( sources, groups, numTimePoints );
+		if ( !sources.isEmpty() )
 			state.setCurrentSource( 0 );
 		multiBoxOverlayRenderer = new MultiBoxOverlayRenderer( width, height );
 		sourceInfoOverlayRenderer = new SourceInfoOverlayRenderer();
 
 		painterThread = new PainterThread( this );
 		viewerTransform = new AffineTransform3D();
-		display = new InteractiveDisplay3DCanvas( width, height, this, this );
+		display = new InteractiveDisplayCanvasComponent< AffineTransform3D >( width, height, TransformEventHandler3D.factory() );
+		display.addTransformListener( this );
+		final BufferedImageOverlayRenderer renderTarget = new BufferedImageOverlayRenderer();
+		display.addOverlayRenderer( renderTarget );
+		renderTarget.setCanvasSize( width, height );
+		display.addOverlayRenderer( this );
+		keybindings = new InputActionBindings();
 
 		final double[] screenScales = new double[] { 1, 0.75, 0.5, 0.25, 0.125 };
 		final long targetRenderNanos = 30 * 1000000;
@@ -119,13 +158,14 @@ public class SpimViewer implements OverlayRenderer, TransformListener3D, Painter
 		final int badIoFrameBlockFrames = 5;
 		final boolean doubleBuffered = true;
 		final int numRenderingThreads = 3;
-		imageRenderer = new MultiResolutionRenderer( display, painterThread, screenScales, targetRenderNanos, targetIoNanos, badIoFrameBlockFrames, doubleBuffered, numRenderingThreads );
+		imageRenderer = new MultiResolutionRenderer( renderTarget, painterThread, screenScales, targetRenderNanos, targetIoNanos, badIoFrameBlockFrames, doubleBuffered, numRenderingThreads );
 
-		mouseCoordinates = new MouseCoordinateListener() ;
+		mouseCoordinates = new MouseCoordinateListener();
 		display.addHandler( mouseCoordinates );
 
 		sliderTime = new JSlider( JSlider.HORIZONTAL, 0, numTimePoints - 1, 0 );
-		sliderTime.addChangeListener( new ChangeListener() {
+		sliderTime.addChangeListener( new ChangeListener()
+		{
 			@Override
 			public void stateChanged( final ChangeEvent e )
 			{
@@ -134,8 +174,14 @@ public class SpimViewer implements OverlayRenderer, TransformListener3D, Painter
 			}
 		} );
 
-//		final GraphicsConfiguration gc = GuiHelpers.getSuitableGraphicsConfiguration( ARGBScreenImage.ARGB_COLOR_MODEL );
-		final GraphicsConfiguration gc = GuiHelpers.getSuitableGraphicsConfiguration( GuiHelpers.RGB_COLOR_MODEL );
+		visibilityAndGrouping = new VisibilityAndGrouping( state );
+		visibilityAndGrouping.addUpdateListener( this );
+
+		transformListeners = new CopyOnWriteArrayList< TransformListener< AffineTransform3D > >();
+		msgOverlay = new MessageOverlayAnimator( 800 );
+
+//		final GraphicsConfiguration gc = GuiUtil.getSuitableGraphicsConfiguration( GuiUtil.ARGB_COLOR_MODEL );
+		final GraphicsConfiguration gc = GuiUtil.getSuitableGraphicsConfiguration( GuiUtil.RGB_COLOR_MODEL );
 		frame = new JFrame( "multi-angle viewer", gc );
 		frame.getRootPane().setDoubleBuffered( true );
 		final Container content = frame.getContentPane();
@@ -152,10 +198,11 @@ public class SpimViewer implements OverlayRenderer, TransformListener3D, Painter
 			}
 		} );
 		frame.setVisible( true );
+		renderTarget.setCanvasSize( display.getWidth(), display.getHeight() );
 
-		keysActions = new ArrayList< Pair< KeyStroke, Action > >();
-		createKeyActions();
-		installKeyActions( frame );
+		SwingUtilities.replaceUIActionMap( frame.getRootPane(), keybindings.getConcatenatedActionMap() );
+		SwingUtilities.replaceUIInputMap( frame.getRootPane(), JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT, keybindings.getConcatenatedInputMap() );
+		new NavigationKeyHandler( this );
 
 		painterThread.start();
 
@@ -182,11 +229,11 @@ public class SpimViewer implements OverlayRenderer, TransformListener3D, Painter
 	{
 		imageRenderer.paint( state );
 
-		synchronized( this )
+		synchronized ( this )
 		{
 			if ( currentAnimator != null )
 			{
-				final TransformEventHandler3D handler = display.getTransformEventHandler();
+				final TransformEventHandler< AffineTransform3D > handler = display.getTransformEventHandler();
 				final AffineTransform3D transform = currentAnimator.getCurrent( System.currentTimeMillis() );
 				handler.setTransform( transform );
 				transformChanged( transform );
@@ -198,13 +245,10 @@ public class SpimViewer implements OverlayRenderer, TransformListener3D, Painter
 		display.repaint();
 	}
 
-	// TODO remove?
 	public void requestRepaint()
 	{
 		imageRenderer.requestRepaint();
 	}
-
-	TextOverlayAnimator animatedOverlay = null;
 
 	@Override
 	public void drawOverlays( final Graphics g )
@@ -231,6 +275,14 @@ public class SpimViewer implements OverlayRenderer, TransformListener3D, Painter
 			else
 				display.repaint();
 		}
+
+		if ( !msgOverlay.isComplete() )
+		{
+			msgOverlay.paint( ( Graphics2D ) g, System.currentTimeMillis() );
+			if ( !msgOverlay.isComplete() )
+				display.repaint();
+		}
+
 		if ( multiBoxOverlayRenderer.isHighlightInProgress() )
 			display.repaint();
 	}
@@ -240,21 +292,73 @@ public class SpimViewer implements OverlayRenderer, TransformListener3D, Painter
 	{
 		viewerTransform.set( transform );
 		state.setViewerTransform( transform );
+		for ( final TransformListener< AffineTransform3D > l : transformListeners )
+			l.transformChanged( viewerTransform );
 		requestRepaint();
 	}
 
-
-	static enum AlignPlane
+	@Override
+	public void visibilityChanged( final VisibilityAndGrouping.Event e )
 	{
-		XY,
-		ZY,
-		XZ
+		switch ( e.id )
+		{
+		case CURRENT_SOURCE_CHANGED:
+			multiBoxOverlayRenderer.highlight( visibilityAndGrouping.getCurrentSource() );
+			display.repaint();
+			break;
+		case DISPLAY_MODE_CHANGED:
+			showMessage( visibilityAndGrouping.getDisplayMode().getName() );
+			display.repaint();
+			break;
+		case GROUP_NAME_CHANGED:
+			display.repaint();
+			break;
+		case SOURCE_ACTVITY_CHANGED:
+			// TODO multiBoxOverlayRenderer.highlight() all sources that became visible
+			break;
+		case GROUP_ACTIVITY_CHANGED:
+			// TODO multiBoxOverlayRenderer.highlight() all sources that became visible
+			break;
+		case VISIBILITY_CHANGED:
+			requestRepaint();
+			break;
+		}
 	}
 
 	private final static double c = Math.cos( Math.PI / 4 );
-	private final static double[] qAlignXY = new double[] { 1,  0,  0, 0 };
-	private final static double[] qAlignZY = new double[] { c,  0, -c, 0 };
-	private final static double[] qAlignXZ = new double[] { c,  c,  0, 0 };
+	public static enum AlignPlane
+	{
+		XY( "XY", 2, new double[] { 1, 0, 0, 0 } ),
+		ZY( "ZY", 0, new double[] { c, 0, -c, 0 } ),
+		XZ( "XZ", 1, new double[] { c, c, 0, 0 } );
+
+		private final String name;
+
+		public String getName()
+		{
+			return name;
+		}
+
+		/**
+		 * rotation from the xy-plane aligned coordinate system to this plane.
+		 */
+		private final double[] qAlign;
+
+		/**
+		 * Axis index. The plane spanned by the remaining two axes will be
+		 * transformed to the same plane by the computed rotation and the
+		 * "rotation part" of the affine source transform.
+		 * @see Affine3DHelpers#extractApproximateRotationAffine(AffineTransform3D, double[], int)
+		 */
+		private final int coerceAffineDimension;
+
+		private AlignPlane( final String name, final int coerceAffineDimension, final double[] qAlign )
+		{
+			this.name = name;
+			this.coerceAffineDimension = coerceAffineDimension;
+			this.qAlign = qAlign;
+		}
+	}
 
 	protected synchronized void align( final AlignPlane plane )
 	{
@@ -264,26 +368,9 @@ public class SpimViewer implements OverlayRenderer, TransformListener3D, Painter
 		final double[] qSource = new double[ 4 ];
 		Affine3DHelpers.extractRotationAnisotropic( sourceTransform, qSource );
 
-		final double[] qTmpSource;
-		if ( plane == AlignPlane.XY )
-		{
-			Affine3DHelpers.extractApproximateRotationAffine( sourceTransform, qSource, 2 );
-			qTmpSource = qSource;
-		}
-		else
-		{
-			qTmpSource = new double[4];
-			if ( plane == AlignPlane.ZY )
-			{
-				Affine3DHelpers.extractApproximateRotationAffine( sourceTransform, qSource, 0 );
-				LinAlgHelpers.quaternionMultiply( qSource, qAlignZY, qTmpSource );
-			}
-			else // if ( plane == AlignPlane.XZ )
-			{
-				Affine3DHelpers.extractApproximateRotationAffine( sourceTransform, qSource, 1 );
-				LinAlgHelpers.quaternionMultiply( qSource, qAlignXZ, qTmpSource );
-			}
-		}
+		final double[] qTmpSource = new double[ 4 ];
+		Affine3DHelpers.extractApproximateRotationAffine( sourceTransform, qSource, plane.coerceAffineDimension );
+		LinAlgHelpers.quaternionMultiply( qSource, plane.qAlign, qTmpSource );
 
 		final double[] qTarget = new double[ 4 ];
 		LinAlgHelpers.quaternionInvert( qTmpSource, qTarget );
@@ -303,44 +390,44 @@ public class SpimViewer implements OverlayRenderer, TransformListener3D, Painter
 		}
 	}
 
-	final int indicatorTime = 800;
-
 	protected synchronized void toggleInterpolation()
 	{
 		final Interpolation interpolation = state.getInterpolation();
 		if ( interpolation == Interpolation.NEARESTNEIGHBOR )
 		{
 			state.setInterpolation( Interpolation.NLINEAR );
-			animatedOverlay = new TextOverlayAnimator( "tri-linear interpolation", indicatorTime );
+			showMessage( "tri-linear interpolation" );
 		}
 		else
 		{
 			state.setInterpolation( Interpolation.NEARESTNEIGHBOR );
-			animatedOverlay = new TextOverlayAnimator( "nearest-neighbor interpolation", indicatorTime );
+			showMessage( "nearest-neighbor interpolation" );
 		}
 		requestRepaint();
 	}
 
-	public synchronized void toggleSingleSourceMode()
+	protected void setCurrentGroupOrSource( final int index )
 	{
-		final boolean singleSourceMode = ! state.isSingleSourceMode();
-		state.setSingleSourceMode( singleSourceMode );
-		animatedOverlay = new TextOverlayAnimator( singleSourceMode ? "single-source mode" : "fused mode", indicatorTime );
-		requestRepaint();
+		if ( visibilityAndGrouping.isGroupingEnabled() )
+			visibilityAndGrouping.setCurrentGroup( index );
+		else
+			visibilityAndGrouping.setCurrentSource( index );
 	}
 
-	public synchronized void toggleVisibility( final int sourceIndex )
+	protected void toggleActiveGroupOrSource( final int index )
 	{
-		if ( sourceIndex >= 0 && sourceIndex < state.numSources() )
-		{
-			final SourceState< ? > source = state.getSources().get( sourceIndex );
-			source.setActive( !source.isActive() );
-			multiBoxOverlayRenderer.highlight( sourceIndex );
-			if ( ! state.isSingleSourceMode() )
-				requestRepaint();
-			else
-				display.repaint();
-		}
+		if ( visibilityAndGrouping.isGroupingEnabled() )
+			visibilityAndGrouping.setGroupActive( index, !visibilityAndGrouping.isGroupActive( index ) );
+		else
+			visibilityAndGrouping.setSourceActive( index, !visibilityAndGrouping.isSourceActive( index ) );
+	}
+
+	/**
+	 * TODO
+	 */
+	public synchronized void setDisplayMode( final DisplayMode displayMode )
+	{
+		visibilityAndGrouping.setDisplayMode( displayMode );
 	}
 
 	/**
@@ -348,15 +435,7 @@ public class SpimViewer implements OverlayRenderer, TransformListener3D, Painter
 	 */
 	public synchronized void setCurrentSource( final int sourceIndex )
 	{
-		if ( sourceIndex >= 0 && sourceIndex < state.numSources() )
-		{
-			state.setCurrentSource( sourceIndex );
-			multiBoxOverlayRenderer.highlight( sourceIndex );
-			if ( state.isSingleSourceMode() )
-				requestRepaint();
-			else
-				display.repaint();
-		}
+		visibilityAndGrouping.setCurrentSource( sourceIndex );
 	}
 
 	/**
@@ -383,169 +462,66 @@ public class SpimViewer implements OverlayRenderer, TransformListener3D, Painter
 	 *
 	 * @return the viewer canvas.
 	 */
-	public InteractiveDisplay3DCanvas getDisplay()
+	public InteractiveDisplayCanvasComponent< AffineTransform3D > getDisplay()
 	{
 		return display;
 	}
 
 	/**
-	 * Create Keystrokes and corresponding Actions.
+	 * Display the specified message in a text overlay for a short time.
 	 *
-	 * @return list of KeyStroke-Action-pairs.
+	 * @param msg
+	 *            String to display. Should be just one line of text.
 	 */
-	protected void createKeyActions()
+	public void showMessage( final String msg )
 	{
-		KeyStroke key = KeyStroke.getKeyStroke( KeyEvent.VK_I, 0 );
-		Action action = new AbstractAction( "toogle interpolation" )
-		{
-			@Override
-			public void actionPerformed( final ActionEvent e )
-			{
-				toggleInterpolation();
-			}
-
-			private static final long serialVersionUID = 1L;
-		};
-		keysActions.add( new ValuePair< KeyStroke, Action >( key, action ) );
-
-		key = KeyStroke.getKeyStroke( KeyEvent.VK_F, 0 );
-		action = new AbstractAction( "toogle display mode" )
-		{
-			@Override
-			public void actionPerformed( final ActionEvent e )
-			{
-				toggleSingleSourceMode();
-			}
-
-			private static final long serialVersionUID = 1L;
-		};
-		keysActions.add( new ValuePair< KeyStroke, Action >( key, action ) );
-
-		final int[] numkeys = new int[] { KeyEvent.VK_1, KeyEvent.VK_2, KeyEvent.VK_3, KeyEvent.VK_4, KeyEvent.VK_5, KeyEvent.VK_6, KeyEvent.VK_7, KeyEvent.VK_8, KeyEvent.VK_9, KeyEvent.VK_0 };
-
-		for ( int i = 0; i < numkeys.length; ++i )
-		{
-			final int index = i;
-
-			key = KeyStroke.getKeyStroke( numkeys[ i ], 0 );
-			action = new AbstractAction( "set current source " + i )
-			{
-				@Override
-				public void actionPerformed( final ActionEvent e )
-				{
-					setCurrentSource( index );
-				}
-
-				private static final long serialVersionUID = 1L;
-			};
-			keysActions.add( new ValuePair< KeyStroke, Action >( key, action ) );
-
-			key = KeyStroke.getKeyStroke( numkeys[ i ], KeyEvent.SHIFT_DOWN_MASK );
-			action = new AbstractAction( "toggle source visibility " + i )
-			{
-				@Override
-				public void actionPerformed( final ActionEvent e )
-				{
-					toggleVisibility( index );
-				}
-
-				private static final long serialVersionUID = 1L;
-			};
-			keysActions.add( new ValuePair< KeyStroke, Action >( key, action ) );
-		}
-
-		key = KeyStroke.getKeyStroke( KeyEvent.VK_Z, KeyEvent.SHIFT_DOWN_MASK );
-		action = new AbstractAction( "align XY plane" )
-		{
-			@Override
-			public void actionPerformed( final ActionEvent e )
-			{
-				align( AlignPlane.XY );
-			}
-
-			private static final long serialVersionUID = 1L;
-		};
-		keysActions.add( new ValuePair< KeyStroke, Action >( key, action ) );
-
-		key = KeyStroke.getKeyStroke( KeyEvent.VK_X, KeyEvent.SHIFT_DOWN_MASK );
-		action = new AbstractAction( "align ZY plane" )
-		{
-			@Override
-			public void actionPerformed( final ActionEvent e )
-			{
-				align( AlignPlane.ZY );
-			}
-
-			private static final long serialVersionUID = 1L;
-		};
-		keysActions.add( new ValuePair< KeyStroke, Action >( key, action ) );
-
-		key = KeyStroke.getKeyStroke( KeyEvent.VK_Y, KeyEvent.SHIFT_DOWN_MASK );
-		action = new AbstractAction( "align XZ plane" )
-		{
-			@Override
-			public void actionPerformed( final ActionEvent e )
-			{
-				align( AlignPlane.XZ );
-			}
-
-			private static final long serialVersionUID = 1L;
-		};
-		keysActions.add( new ValuePair< KeyStroke, Action >( key, action ) );
-		key = KeyStroke.getKeyStroke( KeyEvent.VK_A, KeyEvent.SHIFT_DOWN_MASK );
-		keysActions.add( new ValuePair< KeyStroke, Action >( key, action ) );
-
-		key = KeyStroke.getKeyStroke( KeyEvent.VK_CLOSE_BRACKET, 0, false );
-		action = new AbstractAction( "next timepoint" )
-		{
-			@Override
-			public void actionPerformed( final ActionEvent e )
-			{
-				sliderTime.setValue( sliderTime.getValue() + 1 );
-			}
-
-			private static final long serialVersionUID = 1L;
-		};
-		keysActions.add( new ValuePair< KeyStroke, Action >( key, action ) );
-		key = KeyStroke.getKeyStroke( KeyEvent.VK_M, 0 );
-		keysActions.add( new ValuePair< KeyStroke, Action >( key, action ) );
-
-		key = KeyStroke.getKeyStroke( KeyEvent.VK_OPEN_BRACKET, 0, false );
-		action = new AbstractAction( "previous timepoint" )
-		{
-			@Override
-			public void actionPerformed( final ActionEvent e )
-			{
-				sliderTime.setValue( sliderTime.getValue() - 1 );
-			}
-
-			private static final long serialVersionUID = 1L;
-		};
-		keysActions.add( new ValuePair< KeyStroke, Action >( key, action ) );
-		key = KeyStroke.getKeyStroke( KeyEvent.VK_N, 0 );
-		keysActions.add( new ValuePair< KeyStroke, Action >( key, action ) );
-	}
-
-	public void addKeyAction( final KeyStroke keystroke, final Action action )
-	{
-		keysActions.add( new ValuePair< KeyStroke, Action >( keystroke, action ) );
-		installKeyActions( frame );
+		msgOverlay.add( msg );
+		display.repaint();
 	}
 
 	/**
-	 * Add Keystrokes and corresponding Actions from {@link #keysActions} to a container.
+	 * Add a {@link TransformListener} to notify about viewer transformation
+	 * changes. Listeners will be notified <em>before</em> calling
+	 * {@link #requestRepaint()} so they have the chance to interfere.
+	 *
+	 * @param listener
+	 *            the transform listener to add.
 	 */
-	public void installKeyActions( final RootPaneContainer container )
+	public synchronized void addTransformListener( final TransformListener< AffineTransform3D > listener )
 	{
-		final JRootPane rootpane = container.getRootPane();
-		final ActionMap am = rootpane.getActionMap();
-		final InputMap im = rootpane.getInputMap( JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT );
-		for ( final Pair< KeyStroke, Action > keyAction : keysActions )
+		addTransformListener( listener, Integer.MAX_VALUE );
+	}
+
+	/**
+	 * Add a {@link TransformListener} to notify about viewer transformation
+	 * changes. Listeners will be notified <em>before</em> calling
+	 * {@link #requestRepaint()} so they have the chance to interfere.
+	 *
+	 * @param listener
+	 *            the transform listener to add.
+	 * @param index
+	 *            position in the list of listeners at which to insert this one.
+	 */
+	public void addTransformListener( final TransformListener< AffineTransform3D > listener, final int index )
+	{
+		synchronized ( transformListeners )
 		{
-			final KeyStroke key = keyAction.getA();
-			final Action action = keyAction.getB();
-			im.put( key, action.getValue( Action.NAME ) );
-			am.put( action.getValue( Action.NAME ), action );
+			final int s = transformListeners.size();
+			transformListeners.add( index < 0 ? 0 : index > s ? s : index, listener );
+		}
+	}
+
+	/**
+	 * Remove a {@link TransformListener}.
+	 *
+	 * @param listener
+	 *            the transform listener to remove.
+	 */
+	public synchronized void removeTransformListener( final TransformListener< AffineTransform3D > listener )
+	{
+		synchronized ( transformListeners )
+		{
+			transformListeners.remove( listener );
 		}
 	}
 
@@ -585,5 +561,35 @@ public class SpimViewer implements OverlayRenderer, TransformListener3D, Painter
 		{
 			return y;
 		}
+	}
+
+	public synchronized Element stateToXml()
+	{
+		return new XmlIoViewerState().toXml( state );
+	}
+
+	public synchronized void stateFromXml( final Element parent )
+	{
+		final XmlIoViewerState io = new XmlIoViewerState();
+		io.restoreFromXml( parent.getChild( io.getTagName() ), state );
+	}
+
+	@Override
+	public void setCanvasSize( final int width, final int height )
+	{}
+
+	public JFrame getFrame()
+	{
+		return frame;
+	}
+
+	public VisibilityAndGrouping getVisibilityAndGrouping()
+	{
+		return visibilityAndGrouping;
+	}
+
+	public InputActionBindings getKeybindings()
+	{
+		return keybindings;
 	}
 }

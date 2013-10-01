@@ -7,6 +7,7 @@ import java.util.List;
 import net.imglib2.Interval;
 import net.imglib2.realtransform.AffineTransform3D;
 import net.imglib2.util.Intervals;
+import viewer.render.DisplayMode;
 import viewer.render.SourceState;
 import viewer.render.ViewerState;
 
@@ -95,28 +96,36 @@ public class MultiBoxOverlayRenderer
 		synchronized ( viewerState )
 		{
 			final List< SourceState< ? > > sources = viewerState.getSources();
+			final List< Integer > visible = viewerState.getVisibleSourceIndices();
 			final int timepoint = viewerState.getCurrentTimepoint();
-			final boolean singleSourceMode = viewerState.isSingleSourceMode();
+			final DisplayMode displayMode = viewerState.getDisplayMode();
 
 			final int numSources = sources.size();
-			if ( boxSources.size() != numSources )
+			int numPresentSources = 0;
+			for ( final SourceState< ? > source : sources )
+				if ( source.getSpimSource().isPresent( timepoint ) )
+					numPresentSources++;
+			if ( boxSources.size() != numPresentSources )
 			{
-				while ( boxSources.size() < numSources )
+				while ( boxSources.size() < numPresentSources )
 					boxSources.add( new IntervalAndTransform() );
-				while ( boxSources.size() > numSources )
+				while ( boxSources.size() > numPresentSources )
 					boxSources.remove( boxSources.size() - 1 );
 			}
 
 			final AffineTransform3D sourceToViewer = new AffineTransform3D();
-			for ( int i = 0; i < numSources; ++i )
+			for ( int i = 0, j = 0; i < numSources; ++i )
 			{
 				final SourceState< ? > source = sources.get( i );
-				final IntervalAndTransform boxsource = boxSources.get( i );
-				viewerState.getViewerTransform( sourceToViewer );
-				sourceToViewer.concatenate( source.getSpimSource().getSourceTransform( timepoint, 0 ) );
-				boxsource.setSourceToViewer( sourceToViewer );
-				boxsource.setSourceInterval( source.getSpimSource().getSource( timepoint, 0 ) );
-				boxsource.setVisible( source.isVisible( singleSourceMode ) );
+				if ( source.getSpimSource().isPresent( timepoint ) )
+				{
+					final IntervalAndTransform boxsource = boxSources.get( j++ );
+					viewerState.getViewerTransform( sourceToViewer );
+					sourceToViewer.concatenate( source.getSpimSource().getSourceTransform( timepoint, 0 ) );
+					boxsource.setSourceToViewer( sourceToViewer );
+					boxsource.setSourceInterval( source.getSpimSource().getSource( timepoint, 0 ) );
+					boxsource.setVisible( visible.contains( i ) );
+				}
 			}
 		}
 	}

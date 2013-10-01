@@ -24,16 +24,15 @@ import net.imglib2.type.numeric.integer.UnsignedShortType;
 import net.imglib2.type.numeric.real.FloatType;
 import net.imglib2.view.Views;
 
-import org.w3c.dom.Document;
-import org.w3c.dom.Element;
+import org.jdom2.Element;
 
 /**
  * This {@link ImgLoader} loads images that represent a 3D stack as a sequence
  * of slice with one image file per slice, such as created by Stephan
  * Preibisch's Multi-view fusion plugin. It is constructed with the pattern of
  * the image filenames. Then, to laod the image for a given {@link View}, its
- * TODO timepoint? index? and slice indices are filled into the template to get
- * the slice filenames.
+ * TODO timepoint? index?, channel, and slice indices are filled into the
+ * template to get the slice filenames.
  *
  * This {@link ImgLoader} is used for exporting spim sequences to hdf5. Only the
  * {@link #getUnsignedShortImage(View)} method is implemented because this is
@@ -88,7 +87,7 @@ public class FusionImageLoader< T extends RealType< T > > implements ImgLoader
 	 * not implemented.
 	 */
 	@Override
-	public Element toXml( final Document doc, final File basePath )
+	public Element toXml( final File basePath )
 	{
 		throw new UnsupportedOperationException( "not implemented" );
 	}
@@ -106,8 +105,9 @@ public class FusionImageLoader< T extends RealType< T > > implements ImgLoader
 	public RandomAccessibleInterval< UnsignedShortType > getUnsignedShortImage( final View view )
 	{
 		final int tp = view.getTimepoint();
+		final int c = view.getSetup().getChannel();
 
-		RandomAccessibleInterval< T > slice = sliceLoader.load( String.format( pattern, tp, 0 ) );
+		RandomAccessibleInterval< T > slice = sliceLoader.load( String.format( pattern, tp, c, 0 ) );
 		final long[] dimensions = new long[ 3 ];
 		dimensions[ 0 ] = slice.dimension( 0 );
 		dimensions[ 1 ] = slice.dimension( 1 );
@@ -116,7 +116,7 @@ public class FusionImageLoader< T extends RealType< T > > implements ImgLoader
 
 		for ( int z = 0; z < numSlices; ++z )
 		{
-			slice = sliceLoader.load( String.format( pattern, tp, z ) );
+			slice = sliceLoader.load( String.format( pattern, tp, c, z ) );
 
 			final Cursor< UnsignedShortType > d = Views.flatIterable( Views.hyperSlice( img, 2, z ) ).cursor();
 			for ( final UnsignedShortType t : Converters.convert( Views.flatIterable( slice ), converter, type ) )
@@ -145,6 +145,7 @@ public class FusionImageLoader< T extends RealType< T > > implements ImgLoader
 		{
 			try
 			{
+				System.out.println( fn );
 				return opener.openImg( fn, factory, type );
 			}
 			catch ( final ImgIOException e )
