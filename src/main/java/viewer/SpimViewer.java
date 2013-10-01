@@ -107,7 +107,7 @@ public class SpimViewer implements OverlayRenderer, TransformListener< AffineTra
 
 	protected TextOverlayAnimator animatedOverlay;
 
-	protected final MessageOverlayAnimator msgOverlay;
+	protected MessageOverlayAnimator msgOverlay;
 
 	/**
 	 *
