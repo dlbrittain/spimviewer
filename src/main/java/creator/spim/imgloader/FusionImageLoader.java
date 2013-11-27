@@ -1,6 +1,8 @@
 package creator.spim.imgloader;
 
 import ij.ImagePlus;
+import io.scif.img.ImgIOException;
+import io.scif.img.ImgOpener;
 
 import java.io.File;
 
@@ -9,14 +11,12 @@ import mpicbg.spim.data.View;
 import net.imglib2.Cursor;
 import net.imglib2.RandomAccessibleInterval;
 import net.imglib2.converter.Converters;
-import net.imglib2.display.RealUnsignedShortConverter;
+import net.imglib2.converter.RealUnsignedShortConverter;
 import net.imglib2.img.Img;
 import net.imglib2.img.ImgFactory;
 import net.imglib2.img.array.ArrayImgFactory;
 import net.imglib2.img.display.imagej.ImageJFunctions;
 import net.imglib2.img.planar.PlanarImgFactory;
-import net.imglib2.io.ImgIOException;
-import net.imglib2.io.ImgOpener;
 import net.imglib2.type.NativeType;
 import net.imglib2.type.numeric.RealType;
 import net.imglib2.type.numeric.integer.UnsignedByteType;
